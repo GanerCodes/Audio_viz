@@ -1,0 +1,1 @@
+Requires: ffmpeg, python (libs: numpy), java 8
