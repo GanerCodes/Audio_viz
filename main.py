@@ -1,78 +1,126 @@
-import subprocess, itertools, time, json
+import subprocess, itertools, operator, json, threading
 import numpy as np
+from scipy import stats
+# from numba import jit
 
-song_name = "/mnt/laptop_srv/personal/Auto-Youtube-Playlist-Archiver/Music/\
-Different Heaven - Pentakill (ft. ReesaLunn) [Official Video]_Rpr_HNJ0Y3A.mp3"
+song_name = "/home/ganer/Projects/Simulations_Visualizations/Audio_viz/data/song1.mp3"
+# song_name = "/home/ganer/Projects/Games/Aebal/aebal/asd/Wax Fang - Majestic.mp3"
 
 song_data_file = "./song.raw"
 sample_rate    = 48000
 channel_count  = 1
 generate_pcm   = True
 
+thread_count = 10
+SPS = 120
+slo = SPS // 4
+sdc = 8
+prop = 0.85
+
 if generate_pcm:
     subprocess.run([
         "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
         "-i", song_name, "-ac", str(channel_count), "-ar", str(sample_rate),
         "-f", "s16le", "-acodec", "pcm_s16le", song_data_file])
+    print("Generated PCM")
 
 song_data = np.array(np.memmap(song_data_file, dtype='h', mode='r'))
+sampc = SPS * (len(song_data) / sample_rate)
 
 def window(data, func=np.average,
-           para:int|tuple[int,int]=(1,1),
-           step=1, clip=False):
-    b, f = (para // 2, para // 2) if isinstance(para, int) else para
+           para: tuple[int,int]=(1,1),
+           step: int=1, clip: bool=False):
+    b, f = para
     s, e = (b, len(data) - f) if clip else (0, len(data))
-    return (func(data[i-b : i+f]) for i in range(s, e, step))
+    
+    chunks = [range(x-b, x+f) for x in range(s, e, step)]
+    arr = np.zeros(len(chunks))
+    thread_chunk_count = len(chunks) // thread_count
+    print(f"Creating {thread_count} threads for window.")
+    
+    def thread_func(arr, offset, data, chunks):
+        vls = np.zeros(len(chunks))
+        vls = [func(data[chunk[0] : chunk[-1]]) for chunk in chunks]
+        for i, v in enumerate(vls):
+            arr[offset + i] = v
+    
+    threads = []
+    for i in range(0, len(chunks), thread_chunk_count):
+        thread = threading.Thread(
+            target=thread_func,
+            args=(arr, i, data, chunks[i:i+thread_chunk_count]))
+        thread.start()
+        threads.append(thread)
+    
+    [t.join() for t in threads]
+    
+    return arr
+
+def lerp(a, b, c):
+    return a + c * (b - a)
 
 def aprage(data, degree=1):
     v = np.divide(data, np.average(data))
     return v if degree == 1 else np.power(v, degree)
 
-def c(l, x):
-    return min(max(0, x), len(l))
+def normalize(vals, men=0.5, dev=0.75):
+    m, s = np.mean(vals), np.std(vals)
+    return [max(0.00001, men + (j if (j := (dev / s * (q - m))) > 0 else -(np.sqrt(abs(j) + 1) - 1))) for q in vals]
+    # return np.sqrt(len(vals)) * vals / np.sqrt(np.sum(np.square(vals)))
 
-SPS = 120
-sampc = SPS * (len(song_data) / sample_rate)
-slo = SPS // 4
-sdc = 8
-prop = 0.85
+t_kwargs = {
+    'para': (int(sampc), int(sampc)),
+    'step': int(len(song_data) / sampc),
+    'clip': True}
 
-a, f = (aprage(q, 1.5) for q in zip(
-    *window(
+a = aprage(
+    window(
         song_data,
-        func=lambda x: (
-            np.average(np.abs(x)),
-            np.abs(np.average(np.fft.fft(x)))),
-        para=int(sampc),
-        step=int(len(song_data) / sampc),
-        clip=True)))
+        func=lambda x: np.average(np.abs(x)),
+        **t_kwargs), 1.5)
+print("Finished first window")
+f = aprage(
+    window(
+        song_data,
+        func=lambda x: np.average(np.abs(np.fft.fft(x))),
+        **t_kwargs), 1.5)
+print("Finished second window")
+
+# a, f = (aprage(q, 1.5) for q in zip(
+#     *window(
+#         song_data,
+#         func=lambda x: (
+#             np.average(np.abs(x)),
+#             np.abs(np.average(np.fft.fft(x)))),
+#         para=(int(sampc), int(sampc)),
+#         step=int(len(song_data) / sampc),
+#         clip=True)))
 
 l = aprage(
-    list(window(
-        list(zip(a, f)),
-        lambda x: np.average(
-            np.abs(
-                np.fft.fft(
-                    [0.5*v[0]+v[1] for v in x]))),
+    window(
+        np.array([0.5*v1 + v2 for v1, v2 in zip(a, f)]),
+        lambda x: np.average(np.abs(np.fft.fft(x))),
         para=(slo, 0),
-        clip=True)),
+        clip=True),
     1.85)
+print("Finished third window")
 
 s = aprage(
-    list(window(
+    window(
         l,
         func=np.std,
         para=(
             int(prop * sdc),
             int((1 - prop) * sdc)),
-        clip=True)),
+        clip=True),
     1.5)
+print("Finished fourth window")
 
-vals = dict(zip('afls', (a, f, l, s)))
-i = {k: (lambda x: (
-    tuple(x),
-    tuple(itertools.accumulate(x, lambda a, b: a + b))
-))(aprage(v)) for k, v in vals.items()}
+i = {}
+for k, v in zip('afls', (a, f, l, s)):
+    g = normalize(v)
+    i[k] = (tuple(g), tuple(itertools.accumulate(g, operator.add)))
+print("Created accumulators")
 
 json.dump({
         'i': i,
@@ -80,23 +128,4 @@ json.dump({
         'song_name': song_name,
         'sample_rate': sample_rate
     }, open('data.json', 'w'))
-
-exit()
-proc = subprocess.Popen(["play", "-t", "raw", "-r", "48k",
-        "-e", "signed", "-v", "0.05", "-b", "16", "-c", "1", song_data_file], stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
-
-import atexit
-atexit.register(lambda: proc.kill())
-time.sleep(0.1)
-
-start_time = time.time()
-while True:
-    time.sleep(1 / 120)
-    dt = time.time() - start_time
-    t = int(SPS * dt)
-
-    print(f"{dt:<010.5f} | \
-{'#'*int(a[t]*3):<11} | \
-{'#'*int(f[t]*1):<12} | \
-{'#'*int(l[t]*2):<14} | \
-{'#'*int(s[t]*5):<15}")
+print("Wrote JSON - finished!")

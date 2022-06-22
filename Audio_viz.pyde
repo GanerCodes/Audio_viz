@@ -124,7 +124,7 @@ def draw():
         popMatrix()
     pushMatrix()
     translate(width / 2, height / 2)
-    m = pow(1.25 * i_f, 2.05) + pow(i_s, 2.0)
+    m = min(pow(1.25 * i_f, 2.05) + pow(i_s, 2.0), 30.0)
     translate(random(-m, m), random(-m, m))
     sc()
     noFill()
@@ -141,10 +141,9 @@ def draw():
         y = 20 * i + 10
         line(0, y, 100 * v, y)
     
-    
     noStroke()
     textAlign(RIGHT)
-    text("{}\n\n{}\n{}\n{}\n{}\n\n{}\n{}\n{}\n{}".format(frameRate, *(vals_i + vals_a)), width, 20)
+    text("{}\n{}\n{}\n\n{}\n{}\n{}\n{}\n\n{}\n{}\n{}\n{}".format(frameRate, tdt, len(song_data['i']['a'][0]) // data_per_second, *(vals_i + vals_a)), width, 20)
 
 def keyPressed():
     global shader
